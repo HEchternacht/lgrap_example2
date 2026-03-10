@@ -32,7 +32,7 @@ from app.schemas.openai import (
     Usage,
 )
 from app.utils.context import parse_extra_body, prompt_params, tool_config
-from app.utils.streaming import lc_message_to_openai, openai_to_lc_messages
+from app.utils.streaming import build_agent_messages, lc_message_to_openai, openai_to_lc_messages
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -64,9 +64,12 @@ async def chat_completions(body: ChatCompletionRequest, request: Request):
     run_id = run_manager.create_run()
     # Parse extra_body and distribute into per-namespace context vars
     parsed = parse_extra_body(body.extra_body)
-    prompt_params.set(parsed.get("prompt", {}))
+    params = parsed.get("prompt", {})
+    prompt_params.set(params)
     tool_config.set({ns: cfg for ns, cfg in parsed.items() if ns != "prompt"})
-    lc_messages = openai_to_lc_messages(body.messages)
+    # Build messages with rendered system prompt + user template applied NOW,
+    # in the route handler where params are definitively available.
+    lc_messages = build_agent_messages(openai_to_lc_messages(body.messages), params)
     created = int(time.time())
 
     if body.stream:

@@ -37,6 +37,29 @@ def openai_to_lc_messages(messages: list[ChatMessage]) -> list[BaseMessage]:
     return result
 
 
+def build_agent_messages(
+    messages: list[BaseMessage],
+    params: dict[str, str],
+) -> list[BaseMessage]:
+    """
+    Prepend the rendered system prompt and wrap the last HumanMessage
+    with USER_PROMPT_TEMPLATE.  Called once in the route handler so
+    the agent receives fully-rendered messages and needs no context vars.
+    """
+    from app.prompts.system import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE, render  # local to avoid circular
+
+    result = [SystemMessage(content=render(SYSTEM_PROMPT, params))] + list(messages)
+
+    # Wrap the last human message (the current user turn)
+    for i in range(len(result) - 1, -1, -1):
+        if isinstance(result[i], HumanMessage):
+            raw = result[i].content if isinstance(result[i].content, str) else ""
+            result[i] = HumanMessage(content=render(USER_PROMPT_TEMPLATE, {**params, "user_input": raw}))
+            break
+
+    return result
+
+
 def lc_message_to_openai(message: BaseMessage) -> ChatMessage:
     """Convert a LangChain AIMessage to an OpenAI-compatible ChatMessage."""
     if isinstance(message, AIMessage):
