@@ -11,9 +11,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.agent.graph import get_agent
 from app.routes import chat, models
+from app.utils.config import Settings
+from db_app.database import create_tables
+from db_app.routes.auth import router as auth_router
+from db_app.routes.history import router as history_router
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +27,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("Starting lgrap — pre-warming LangGraph agent …")
     get_agent()  # build + cache the compiled graph before the first request
+    create_tables()  # ensure all DB tables exist
     logger.info("Agent ready.")
     yield
     logger.info("lgrap shutting down.")
@@ -44,6 +50,17 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
     )
 
+    _settings = Settings()
+
+    # Session cookie — signed with SECRET_KEY via itsdangerous
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=_settings.secret_key,
+        session_cookie="lgrap_session",
+        same_site="lax",
+        https_only=False,  # set True in production behind HTTPS
+    )
+
     # Allow all origins in development; tighten for production.
     app.add_middleware(
         CORSMiddleware,
@@ -53,7 +70,9 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.include_router(auth_router)           # /auth/login  /auth/logout  /auth/me
     app.include_router(chat.router, prefix="/v1")
     app.include_router(models.router, prefix="/v1")
+    app.include_router(history_router, prefix="/v1")
 
     return app

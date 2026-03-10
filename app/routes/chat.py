@@ -10,6 +10,7 @@ Supports:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -22,6 +23,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.agent.graph import get_agent
 from app.managers.run_manager import run_manager
+from app.utils.config import settings
 from app.schemas.openai import (
     ChatCompletionChunk,
     ChatCompletionRequest,
@@ -61,6 +63,16 @@ async def chat_completions(body: ChatCompletionRequest, request: Request):
     - The response `X-Run-Id` header contains the run ID usable for cancellation.
     - Cancel an active stream via `DELETE /v1/chat/completions/{run_id}`.
     """
+    # Validate the requested model against the configured allowlist.
+    if body.model not in settings.available_models:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model '{body.model}' is not available. "
+                f"Allowed models: {settings.available_models}"
+            ),
+        )
+
     run_id = run_manager.create_run()
     # Parse extra_body and distribute into per-namespace context vars
     parsed = parse_extra_body(body.extra_body)
@@ -72,9 +84,16 @@ async def chat_completions(body: ChatCompletionRequest, request: Request):
     lc_messages = build_agent_messages(openai_to_lc_messages(body.messages), params)
     created = int(time.time())
 
+    agent = get_agent(body.model)
+
     if body.stream:
         return StreamingResponse(
-            _stream_response(run_id, body.model, lc_messages, created, request),
+            _stream_response(
+                run_id, body.model, lc_messages, created, request,
+                agent=agent,
+                user_id=body.user or "anonymous",
+                raw_messages=[m.model_dump() for m in body.messages],
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -86,9 +105,18 @@ async def chat_completions(body: ChatCompletionRequest, request: Request):
     # ---- non-streaming ----
     try:
         config = _run_config(run_id)
-        result = await get_agent().ainvoke({"messages": lc_messages}, config=config)
+        result = await agent.ainvoke({"messages": lc_messages}, config=config)
         _log_messages(run_id, result["messages"])
         final_msg = result["messages"][-1]
+        response_oa = lc_message_to_openai(final_msg)
+        # Persist the full conversation to DB (non-blocking)
+        await asyncio.to_thread(
+            _sync_save_history,
+            body.user or "anonymous",
+            body.model,
+            [m.model_dump() for m in body.messages],
+            response_oa.content or "",
+        )
         return ChatCompletionResponse(
             id=f"chatcmpl-{run_id}",
             created=created,
@@ -96,7 +124,7 @@ async def chat_completions(body: ChatCompletionRequest, request: Request):
             choices=[
                 Choice(
                     index=0,
-                    message=lc_message_to_openai(final_msg),
+                    message=response_oa,
                     finish_reason="stop",
                 )
             ],
@@ -152,6 +180,9 @@ async def _stream_response(
     lc_messages: list[BaseMessage],
     created: int,
     request: Request,
+    agent,
+    user_id: str = "anonymous",
+    raw_messages: list[dict] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Async generator that yields SSE-formatted chunks from the agent."""
     try:
@@ -167,8 +198,9 @@ async def _stream_response(
 
         config = _run_config(run_id)
         finish_reason = "stop"
+        content_buf: list[str] = []  # accumulates the final assistant text
 
-        async for event in get_agent().astream_events(
+        async for event in agent.astream_events(
             {"messages": lc_messages},
             version="v2",
             config=config,
@@ -238,6 +270,7 @@ async def _stream_response(
             has_tool_calls = bool(getattr(chunk_msg, "tool_call_chunks", None))
 
             if content and not has_tool_calls:
+                content_buf.append(content)
                 yield _sse(
                     ChatCompletionChunk(
                         id=f"chatcmpl-{run_id}",
@@ -264,6 +297,16 @@ async def _stream_response(
         )
         yield "data: [DONE]\n\n"
 
+        # Save completed conversation to DB after client has received all data
+        if raw_messages and content_buf:
+            await asyncio.to_thread(
+                _sync_save_history,
+                user_id,
+                model,
+                raw_messages,
+                "".join(content_buf),
+            )
+
     except Exception as exc:
         logger.error("Streaming error (run=%s): %s", run_id, exc, exc_info=True)
         error_payload = json.dumps(
@@ -277,6 +320,37 @@ async def _stream_response(
 def _sse(payload: str) -> str:
     """Wrap a JSON payload as an SSE data line."""
     return f"data: {payload}\n\n"
+
+
+def _sync_save_history(
+    user_id: str,
+    model: str,
+    raw_messages: list[dict],
+    response_content: str,
+) -> None:
+    """
+    Persist the completed conversation to the database.
+    Runs in a thread (via asyncio.to_thread) so the event loop is never blocked.
+    """
+    try:
+        from db_app.crud.history import save_chat_history
+        from db_app.database import SessionLocal
+
+        messages = list(raw_messages) + [{"role": "assistant", "content": response_content}]
+        first_user = next(
+            (m.get("content", "") for m in messages if m.get("role") == "user"), None
+        )
+        title: str | None = None
+        if first_user:
+            title = (first_user[:117] + "…") if len(first_user) > 120 else first_user
+
+        db = SessionLocal()
+        try:
+            save_chat_history(db, user_id, model, messages, title)
+        finally:
+            db.close()
+    except Exception:
+        logger.warning("Failed to save chat history (user=%s)", user_id, exc_info=True)
 
 
 def _log_messages(run_id: str, messages: list) -> None:

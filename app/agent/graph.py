@@ -28,18 +28,18 @@ from app.utils.config import settings
 logger = logging.getLogger(__name__)
 
 
-def _build_agent():
-    """Compile and return the LangGraph agent."""
+def _build_agent(model_name: str):
+    """Compile and return a LangGraph agent wired to *model_name*."""
     logger.info(
         "Building LangGraph agent (model=%s, base_url=%s)",
-        settings.model_name,
+        model_name,
         settings.openai_base_url,
     )
 
     llm = ChatOpenAI(
         base_url=settings.openai_base_url,
         api_key=settings.openai_api_key,
-        model=settings.model_name,
+        model=model_name,
         streaming=True,
     )
 
@@ -65,7 +65,13 @@ def _build_agent():
     return workflow.compile()
 
 
-@functools.lru_cache(maxsize=1)
-def get_agent():
-    """Return the compiled LangGraph agent (built once, cached forever)."""
-    return _build_agent()
+@functools.lru_cache(maxsize=16)
+def get_agent(model_name: str | None = None):
+    """
+    Return the compiled LangGraph agent for *model_name*.
+
+    One graph is compiled and cached per distinct model name so that
+    switching models on the fly never rebuilds a graph that was already used.
+    Falls back to ``settings.model_name`` when no name is supplied.
+    """
+    return _build_agent(model_name or settings.model_name)

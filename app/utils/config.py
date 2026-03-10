@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,13 +21,28 @@ class Settings(BaseSettings):
     # --- LLM ---
     openai_base_url: str = "http://127.0.0.1:8080/v1"
     openai_api_key: str = "not-needed"
+    # Default model used when the caller does not specify one in the request.
     model_name: str = "gpt-4"
+    # Comma-separated allowlist of models the API will accept.
+    # e.g.  AVAILABLE_MODELS=gpt-4,gpt-3.5-turbo,mistral
+    available_models: list[str] = ["gpt-4"]
+
+    @field_validator("available_models", mode="before")
+    @classmethod
+    def _split_models(cls, v: object) -> object:
+        """Accept either a JSON array or a plain comma-separated string."""
+        if isinstance(v, str):
+            return [m.strip() for m in v.split(",") if m.strip()]
+        return v
 
     # --- LangSmith monitoring (new-style LANGSMITH_ prefix) ---
     langsmith_tracing: str = "false"
     langsmith_endpoint: str = "https://api.smith.langchain.com"
     langsmith_api_key: str = ""
     langsmith_project: str = "lgrap"
+
+    # --- Session ---
+    secret_key: str = "change-me-in-production"
 
     # --- Server ---
     host: str = "0.0.0.0"
