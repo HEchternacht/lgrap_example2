@@ -1,0 +1,33 @@
+[project]
+name = "lgrap"
+version = "0.1.0"
+description = "LangGraph OpenAI-compatible agent API with streaming and LangSmith monitoring"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.135.1",
+    "uvicorn[standard]>=0.41.0",
+    "langchain>=1.2.10",
+    "langchain-openai>=1.1.11",
+    "langgraph>=1.0.10",
+    "langsmith>=0.3.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "ipykernel>=7.2.0",
+    "langchain-community>=0.4.1",
+    "setuptools>=82.0.1",
+]
+
+[project.scripts]
+lgrap = "main:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools]
+py-modules = ["main"]
