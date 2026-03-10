@@ -31,7 +31,7 @@ from app.schemas.openai import (
     Delta,
     Usage,
 )
-from app.utils.context import parse_extra_body, tool_config
+from app.utils.context import parse_extra_body, prompt_params, tool_config
 from app.utils.streaming import lc_message_to_openai, openai_to_lc_messages
 
 logger = logging.getLogger(__name__)
@@ -62,8 +62,10 @@ async def chat_completions(body: ChatCompletionRequest, request: Request):
     - Cancel an active stream via `DELETE /v1/chat/completions/{run_id}`.
     """
     run_id = run_manager.create_run()
-    # Set per-request tool config so tools can read it via contextvars
-    tool_config.set(parse_extra_body(body.extra_body))
+    # Parse extra_body and distribute into per-namespace context vars
+    parsed = parse_extra_body(body.extra_body)
+    prompt_params.set(parsed.get("prompt", {}))
+    tool_config.set({ns: cfg for ns, cfg in parsed.items() if ns != "prompt"})
     lc_messages = openai_to_lc_messages(body.messages)
     created = int(time.time())
 
